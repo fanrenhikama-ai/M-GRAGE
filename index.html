@@ -480,6 +480,8 @@
     .modal-card {
       width: 100%;
       max-width: 440px;
+      max-height: 90vh;
+      overflow-y: auto;
       background: var(--panel);
       border: 1px solid rgba(255, 255, 255, 0.2);
       border-radius: 8px;
@@ -508,7 +510,8 @@
       margin-bottom: 5px;
     }
 
-    .field input,
+    .field input[type="text"],
+    .field input[type="password"],
     .field select,
     .field textarea {
       width: 100%;
@@ -519,6 +522,45 @@
       color: var(--text);
       font-size: 13px;
       font-family: inherit;
+    }
+
+    .field input[type="file"] {
+      width: 100%;
+      font-size: 12px;
+      color: #cbd5e1;
+      padding: 6px 0;
+    }
+
+    .img-preview-box {
+      margin-top: 8px;
+      display: none;
+      align-items: center;
+      gap: 10px;
+      padding: 8px;
+      border-radius: 4px;
+      border: 1px solid var(--line);
+      background: #08090d;
+    }
+
+    .img-preview-box.has-img {
+      display: flex;
+    }
+
+    .img-preview-box img {
+      width: 76px;
+      height: 48px;
+      object-fit: cover;
+      border-radius: 3px;
+      border: 1px solid var(--line);
+      flex-shrink: 0;
+    }
+
+    .img-preview-meta {
+      font-size: 11px;
+      color: var(--muted);
+      line-height: 1.4;
+      min-width: 0;
+      flex: 1;
     }
 
     .modal-foot {
@@ -660,6 +702,7 @@
     let isAdmin = false;
     let mode = null;
     let editId = null;
+    let currentImageData = '';
 
     const adminPanel = document.getElementById('adminPanel');
     const syncBadge = document.getElementById('syncBadge');
@@ -682,6 +725,43 @@
         .replace(/"/g, '&quot;');
     }
 
+    function isSafeImageSrc(src) {
+      if (!src) return false;
+      const s = String(src).trim();
+      return s.startsWith('https://') || s.startsWith('http://') || s.startsWith('data:image/');
+    }
+
+    function compressImageFile(file, maxWidth = 960, quality = 0.72) {
+      return new Promise((resolve, reject) => {
+        const reader = new FileReader();
+        reader.onerror = () => reject(new Error('画像の読み込みに失敗しました'));
+        reader.onload = () => {
+          const img = new Image();
+          img.onerror = () => reject(new Error('画像として開けませんでした'));
+          img.onload = () => {
+            let w = img.width;
+            let h = img.height;
+            if (w > maxWidth) {
+              h = Math.round((h * maxWidth) / w);
+              w = maxWidth;
+            }
+            const canvas = document.createElement('canvas');
+            canvas.width = w;
+            canvas.height = h;
+            const ctx = canvas.getContext('2d');
+            ctx.drawImage(img, 0, 0, w, h);
+            let dataUrl = canvas.toDataURL('image/jpeg', quality);
+            if (dataUrl.length > 360000) {
+              dataUrl = canvas.toDataURL('image/jpeg', 0.5);
+            }
+            resolve(dataUrl);
+          };
+          img.src = reader.result;
+        };
+        reader.readAsDataURL(file);
+      });
+    }
+
     function readLocal() {
       try {
         const raw = localStorage.getItem(CACHE_KEY);
@@ -698,7 +778,9 @@
     }
 
     function writeLocal() {
-      localStorage.setItem(CACHE_KEY, JSON.stringify(db));
+      try {
+        localStorage.setItem(CACHE_KEY, JSON.stringify(db));
+      } catch (_) {}
     }
 
     async function loadCloud() {
@@ -740,7 +822,11 @@
           },
           body: JSON.stringify(db)
         });
-        if (!res.ok) throw new Error();
+        if (!res.ok) {
+          alert('クラウド保存に失敗しました（画像サイズが大きすぎる可能性があります）');
+          setSyncState('ERROR');
+          return;
+        }
         setSyncState('SYNCED', true);
       } catch (_) {
         setSyncState('ERROR');
@@ -752,7 +838,7 @@
       document.getElementById('heroTitle').textContent = db.hero.title || 'PRECISION AERO & TUNING';
       document.getElementById('heroDesc').textContent = db.hero.desc || '';
       const stage = document.getElementById('heroStage');
-      if (db.hero.bgUrl) {
+      if (isSafeImageSrc(db.hero.bgUrl)) {
         stage.style.backgroundImage = `url("${db.hero.bgUrl.replace(/"/g, '')}")`;
       } else {
         stage.style.backgroundImage = '';
@@ -768,7 +854,7 @@
         .map(
           (c) => `
           <article class="card">
-            ${c.image ? `<img class="card-img" src="${esc(c.image)}" alt="${esc(c.name)}" />` : ''}
+            ${isSafeImageSrc(c.image) ? `<img class="card-img" src="${esc(c.image)}" alt="${esc(c.name)}" />` : ''}
             <div class="card-body">
               <div class="card-meta">${esc(c.spec || 'DEMO CAR')}</div>
               <h3 class="card-title">${esc(c.name)}</h3>
@@ -814,7 +900,7 @@
         .map(
           (a) => `
           <article class="card">
-            ${a.image ? `<img class="card-img" src="${esc(a.image)}" alt="${esc(a.name)}" />` : ''}
+            ${isSafeImageSrc(a.image) ? `<img class="card-img" src="${esc(a.image)}" alt="${esc(a.name)}" />` : ''}
             <div class="card-body">
               <div class="card-meta">${esc(a.position || 'AERO')}${a.material ? ' / ' + esc(a.material) : ''}</div>
               <h3 class="card-title">${esc(a.name)}</h3>
@@ -877,17 +963,100 @@
     const formHeading = document.getElementById('formHeading');
     const dynamicForm = document.getElementById('dynamicForm');
 
+    function bindImagePicker(initialSrc) {
+      currentImageData = initialSrc || '';
+      const fileEl = document.getElementById('imgFilePicker');
+      const urlEl = document.getElementById('imgUrlInput');
+      const clearBtn = document.getElementById('btnClearImg');
+      const box = document.getElementById('imgPreviewBox');
+      const thumb = document.getElementById('imgPreviewThumb');
+      const meta = document.getElementById('imgPreviewMeta');
+
+      function updatePreview(src) {
+        if (isSafeImageSrc(src)) {
+          thumb.src = src;
+          meta.textContent = src.startsWith('data:image/')
+            ? '選択した画像を自動圧縮して保存します'
+            : '指定された画像URLを使用します';
+          box.classList.add('has-img');
+        } else {
+          thumb.src = '';
+          meta.textContent = '';
+          box.classList.remove('has-img');
+        }
+      }
+
+      updatePreview(currentImageData);
+
+      if (fileEl) {
+        fileEl.addEventListener('change', async () => {
+          const f = fileEl.files && fileEl.files[0];
+          if (!f) return;
+          meta.textContent = '画像を処理中...';
+          box.classList.add('has-img');
+          try {
+            const compressed = await compressImageFile(f);
+            currentImageData = compressed;
+            if (urlEl) urlEl.value = '';
+            updatePreview(compressed);
+          } catch (err) {
+            alert(err.message || '画像の読み込みに失敗しました');
+            updatePreview(currentImageData);
+          }
+        });
+      }
+
+      if (urlEl) {
+        urlEl.addEventListener('input', () => {
+          const v = urlEl.value.trim();
+          if (v) {
+            currentImageData = v;
+            if (fileEl) fileEl.value = '';
+          } else if (!currentImageData.startsWith('data:image/')) {
+            currentImageData = '';
+          }
+          updatePreview(currentImageData);
+        });
+      }
+
+      if (clearBtn) {
+        clearBtn.addEventListener('click', () => {
+          currentImageData = '';
+          if (fileEl) fileEl.value = '';
+          if (urlEl) urlEl.value = '';
+          updatePreview('');
+        });
+      }
+    }
+
+    function imageFieldHtml(label, initialSrc) {
+      const urlVal = initialSrc && !initialSrc.startsWith('data:image/') ? initialSrc : '';
+      return `
+        <div class="field">
+          <label>${label}（写真・ファイル選択 または URL）</label>
+          <input id="imgFilePicker" type="file" accept="image/*" />
+          <input id="imgUrlInput" name="imageUrl" type="text" placeholder="https://... （任意）" value="${esc(urlVal)}" style="margin-top:6px;" />
+          <div id="imgPreviewBox" class="img-preview-box">
+            <img id="imgPreviewThumb" alt="プレビュー" />
+            <div class="img-preview-meta" id="imgPreviewMeta"></div>
+            <button id="btnClearImg" class="adm-btn" type="button">外す</button>
+          </div>
+        </div>
+      `;
+    }
+
     function openModal(nextMode, item = null) {
       if (!isAdmin) return;
       mode = nextMode;
       editId = item ? item.id : null;
+      currentImageData = '';
 
       if (nextMode === 'vehicle') {
         formHeading.textContent = item ? '車種を編集' : '車種を追加・管理';
         dynamicForm.innerHTML = `
-          <div class="field"><label>メーカー</label><input name="maker" value="${esc(item?.maker || 'TOYOTA')}" /></div>
-          <div class="field"><label>車種名 *</label><input name="name" required value="${esc(item?.name || '')}" /></div>
-          <div class="field"><label>型式・仕様</label><input name="code" value="${esc(item?.code || '')}" /></div>
+          <div class="field"><label>メーカー</label><input name="maker" type="text" value="${esc(item?.maker || 'TOYOTA')}" /></div>
+          <div class="field"><label>車種名 *</label><input name="name" type="text" required value="${esc(item?.name || '')}" /></div>
+          <div class="field"><label>型式・仕様</label><input name="code" type="text" value="${esc(item?.code || '')}" /></div>
         `;
       } else if (nextMode === 'aero') {
         formHeading.textContent = item ? 'エアロを編集' : 'エアロをアップ';
@@ -899,29 +1068,32 @@
           .join('');
         dynamicForm.innerHTML = `
           <div class="field"><label>対象車種 *</label><select name="vehicleId" required>${opts}</select></div>
-          <div class="field"><label>パーツ名 *</label><input name="name" required value="${esc(item?.name || '')}" /></div>
-          <div class="field"><label>部位（FRONT / SIDE / REARなど）</label><input name="position" value="${esc(item?.position || '')}" /></div>
-          <div class="field"><label>価格</label><input name="price" value="${esc(item?.price || '')}" /></div>
-          <div class="field"><label>素材・備考</label><input name="material" value="${esc(item?.material || '')}" /></div>
-          <div class="field"><label>画像URL</label><input name="image" value="${esc(item?.image || '')}" /></div>
+          <div class="field"><label>パーツ名 *</label><input name="name" type="text" required value="${esc(item?.name || '')}" /></div>
+          <div class="field"><label>部位（FRONT / SIDE / REARなど）</label><input name="position" type="text" value="${esc(item?.position || '')}" /></div>
+          <div class="field"><label>価格</label><input name="price" type="text" value="${esc(item?.price || '')}" /></div>
+          <div class="field"><label>素材・備考</label><input name="material" type="text" value="${esc(item?.material || '')}" /></div>
+          ${imageFieldHtml('パーツ画像', item?.image || '')}
           <div class="field"><label>説明</label><textarea name="desc" rows="2">${esc(item?.desc || '')}</textarea></div>
         `;
+        bindImagePicker(item?.image || '');
       } else if (nextMode === 'car') {
         formHeading.textContent = item ? 'デモカーを編集' : 'デモカーをアップ';
         dynamicForm.innerHTML = `
-          <div class="field"><label>デモカー名 *</label><input name="name" required value="${esc(item?.name || '')}" /></div>
-          <div class="field"><label>スペック・型式</label><input name="spec" value="${esc(item?.spec || '')}" /></div>
-          <div class="field"><label>画像URL</label><input name="image" value="${esc(item?.image || '')}" /></div>
+          <div class="field"><label>デモカー名 *</label><input name="name" type="text" required value="${esc(item?.name || '')}" /></div>
+          <div class="field"><label>スペック・型式</label><input name="spec" type="text" value="${esc(item?.spec || '')}" /></div>
+          ${imageFieldHtml('デモカー画像', item?.image || '')}
           <div class="field"><label>説明</label><textarea name="desc" rows="2">${esc(item?.desc || '')}</textarea></div>
         `;
+        bindImagePicker(item?.image || '');
       } else if (nextMode === 'hero') {
         formHeading.textContent = 'トップ文言・背景';
         dynamicForm.innerHTML = `
-          <div class="field"><label>サブ見出し</label><input name="kicker" value="${esc(db.hero.kicker)}" /></div>
-          <div class="field"><label>メインタイトル</label><input name="title" value="${esc(db.hero.title)}" /></div>
+          <div class="field"><label>サブ見出し</label><input name="kicker" type="text" value="${esc(db.hero.kicker)}" /></div>
+          <div class="field"><label>メインタイトル</label><input name="title" type="text" value="${esc(db.hero.title)}" /></div>
           <div class="field"><label>説明文</label><textarea name="desc" rows="3">${esc(db.hero.desc)}</textarea></div>
-          <div class="field"><label>背景画像URL（任意）</label><input name="bgUrl" value="${esc(db.hero.bgUrl || '')}" /></div>
+          ${imageFieldHtml('背景画像', db.hero.bgUrl || '')}
         `;
+        bindImagePicker(db.hero.bgUrl || '');
       } else if (nextMode === 'pass') {
         formHeading.textContent = 'パスワード変更';
         dynamicForm.innerHTML = `
@@ -949,6 +1121,8 @@
       e.preventDefault();
       if (!isAdmin || !mode) return;
       const data = Object.fromEntries(new FormData(dynamicForm).entries());
+      const urlInput = (data.imageUrl || '').trim();
+      const finalImage = urlInput || currentImageData || '';
 
       if (mode === 'vehicle') {
         if (editId) db.vehicles = db.vehicles.map((v) => (v.id === editId ? { ...v, ...data } : v));
@@ -958,14 +1132,23 @@
           selectedVehicleId = id;
         }
       } else if (mode === 'aero') {
-        if (editId) db.aeros = db.aeros.map((a) => (a.id === editId ? { ...a, ...data } : a));
-        else db.aeros.push({ id: 'a_' + Date.now(), ...data });
+        const payload = { ...data, image: finalImage };
+        delete payload.imageUrl;
+        if (editId) db.aeros = db.aeros.map((a) => (a.id === editId ? { ...a, ...payload } : a));
+        else db.aeros.push({ id: 'a_' + Date.now(), ...payload });
         selectedVehicleId = data.vehicleId;
       } else if (mode === 'car') {
-        if (editId) db.cars = db.cars.map((c) => (c.id === editId ? { ...c, ...data } : c));
-        else db.cars.push({ id: 'c_' + Date.now(), ...data });
+        const payload = { ...data, image: finalImage };
+        delete payload.imageUrl;
+        if (editId) db.cars = db.cars.map((c) => (c.id === editId ? { ...c, ...payload } : c));
+        else db.cars.push({ id: 'c_' + Date.now(), ...payload });
       } else if (mode === 'hero') {
-        db.hero = { ...db.hero, ...data };
+        db.hero = {
+          kicker: data.kicker,
+          title: data.title,
+          desc: data.desc,
+          bgUrl: finalImage
+        };
       } else if (mode === 'pass') {
         if (data.newPass && data.newPass.trim()) {
           db.passphrase = data.newPass.trim();
